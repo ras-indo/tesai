@@ -1,14 +1,14 @@
-name: WhisperX Diarization (Multi-Speaker)
+name: WhisperX Diarization - WORKING
 
 on:
   push:
     branches: [ main, master ]
-  workflow_dispatch:  # Manual trigger
+  workflow_dispatch:
 
 jobs:
-  whisperx-diarization:
+  whisperx:
     runs-on: ubuntu-latest
-    timeout-minutes: 30  # Diarization bisa lama
+    timeout-minutes: 60
     
     env:
       HF_TOKEN: ${{ secrets.HF_TOKEN }}
@@ -25,18 +25,19 @@ jobs:
       - name: Install system dependencies
         run: |
           sudo apt-get update
-          sudo apt-get install -y ffmpeg
+          sudo apt-get install -y ffmpeg libsndfile1 wget
           
-      - name: Run WhisperX with Diarization
+      - name: Run WhisperX (FINAL WORKING VERSION)
         run: |
           python run_whisperx.py
           
       - name: Upload artifacts
+        if: success()
         uses: actions/upload-artifact@v4
         with:
-          name: whisperx-outputs
+          name: transcription-results
           path: |
-            *.json
-            *.txt
-            *.srt
+            *_diarized.json
+            *_transcript.txt
+            *_subtitles.srt
           retention-days: 7

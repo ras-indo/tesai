@@ -1,8 +1,8 @@
 #!/usr/bin/env python3
 """
-WHISPERX + PYANNOTE DIARIZATION - FIXED VERSION
+WHISPERX + PYANNOTE DIARIZATION - FIXED DEPENDENCY VERSION
 Dengan HF Token Auth & Speaker Detection
-FIX: Pin Torch and dependency versions to avoid conflicts.
+FIX: Mengatasi error missing numpy, nltk, pandas, dan huggingface-hub version conflict.
 """
 import os
 import sys
@@ -15,11 +15,16 @@ AUDIO_EXTENSIONS = (".wav", ".mp3", ".m4a", ".flac", ".ogg", ".aac", ".opus")
 def run(cmd):
     """Helper: run shell command dengan logging"""
     print("[RUN]", " ".join(cmd))
-    subprocess.check_call(cmd)
+    result = subprocess.run(cmd, capture_output=True, text=True)
+    if result.returncode != 0:
+        print(f"STDOUT: {result.stdout}")
+        print(f"STDERR: {result.stderr}")
+    result.check_returncode()
+    return result
 
 def ensure_dependencies():
-    """Install dependencies dengan VERSI YANG DIKUNCI untuk menghindari konflik"""
-    print("📦 Installing dependencies with version locking...")
+    """Install dependencies dengan VERSI YANG DIKUNCI dan urutan yang benar"""
+    print("📦 Installing dependencies with proper version locking...")
     
     # 1. Upgrade pip & setuptools
     run([sys.executable, "-m", "pip", "install", "--upgrade", "pip", "setuptools"])
@@ -36,11 +41,24 @@ def ensure_dependencies():
         "pyannote.audio",
         "whisperx",
         "transformers",
-        "pytorch-lightning"
+        "pytorch-lightning",
+        "nltk",
+        "pandas",
+        "numpy"
     ])
     
-    # 3. INSTALL TORCH VERSI SPESIFIK DULU (INILAH KUNCI UTAMA)
-    # Gunakan versi 2.1.2 yang stabil dan kompatibel dengan whisperX/pyannote.
+    # 3. INSTALL DEPENDENSI DASAR TERLEBIH DAHULU
+    # Install numpy, pandas, nltk terlebih dahulu
+    run([
+        sys.executable, "-m", "pip", "install",
+        "numpy==1.24.4",
+        "pandas==2.0.3",
+        "nltk==3.8.1",
+        "huggingface-hub==0.20.3",  # Versi yang kompatibel dengan transformers 4.35.2
+    ])
+    
+    # 4. INSTALL TORCH VERSI SPESIFIK
+    # Gunakan versi 2.1.2 yang stabil dan kompatibel
     run([
         sys.executable, "-m", "pip", "install",
         "torch==2.1.2",
@@ -48,21 +66,34 @@ def ensure_dependencies():
         "--index-url", "https://download.pytorch.org/whl/cpu"
     ])
     
-    # 4. INSTALL WHISPERX dan dependencies LAINNYA DENGAN VERSI TERTENTU
-    # Paksa pip untuk tidak meng-upgrade torch yang sudah kita install.
+    # 5. INSTALL TRANSFORMERS dan dependensi terkait
     run([
         sys.executable, "-m", "pip", "install",
-        "whisperx==3.1.1",          # Lock whisperx version
-        "pyannote.audio==3.1.1",    # Gunakan pyannote.audio 3.1.1
-        "transformers==4.35.2",     # Lock transformers version
-        "pytorch-lightning==2.0.9", # Lock lightning version
-        "--no-deps"                 # PENTING: Jangan install dependencies otomatis
+        "transformers==4.35.2",
+        "pytorch-lightning==2.0.9",
     ])
     
-    # 5. Install dependencies ringan yang mungkin diperlukan
-    run([sys.executable, "-m", "pip", "install", "huggingface-hub", "ffmpeg-python"])
+    # 6. INSTALL WHISPERX dan PYANNOTE dengan dependencies
+    # Tanpa --no-deps agar semua dependencies terinstall
+    run([
+        sys.executable, "-m", "pip", "install",
+        "whisperx==3.1.1",
+        "pyannote.audio==3.1.1",
+    ])
     
-    print("✅ Dependencies installed with locked versions.")
+    # 7. Install dependencies tambahan
+    run([sys.executable, "-m", "pip", "install", "ffmpeg-python", "soundfile"])
+    
+    # 8. Download NLTK data yang diperlukan
+    try:
+        import nltk
+        nltk.download('punkt', quiet=True)
+        nltk.download('punkt_tab', quiet=True)
+        print("✅ NLTK data downloaded")
+    except Exception as e:
+        print(f"⚠️  NLTK download warning: {e}")
+    
+    print("✅ Dependencies installed successfully.")
 
 def setup_huggingface():
     """Setup Hugging Face token dari environment"""
@@ -251,7 +282,7 @@ def save_outputs(result, audio_file):
 
 def main():
     """Main workflow"""
-    print("🚀 WhisperX + Pyannote Diarization - FIXED VERSION")
+    print("🚀 WhisperX + Pyannote Diarization - DEPENDENCY FIXED VERSION")
     print("🔐 Using HF Token for speaker detection")
     print("🔒 Locked versions: torch==2.1.2, whisperx==3.1.1, pyannote.audio==3.1.1")
     

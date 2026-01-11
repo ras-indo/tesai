@@ -50,7 +50,7 @@ def transcribe(audio_file):
 
     # LOAD MODEL (MULTILINGUAL, MEDIUM, SILERO VAD)
     model = whisperx.load_model(
-        "medium",
+        "large-v3",
         device=device,
         compute_type=compute_type,
         language=None,

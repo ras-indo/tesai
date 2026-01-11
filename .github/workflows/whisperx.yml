@@ -1,28 +1,42 @@
-name: WhisperX Multilingual Raw JSON
+name: WhisperX Diarization (Multi-Speaker)
 
 on:
   push:
     branches: [ main, master ]
-  workflow_dispatch:
+  workflow_dispatch:  # Manual trigger
 
 jobs:
-  whisperx:
+  whisperx-diarization:
     runs-on: ubuntu-latest
-
+    timeout-minutes: 30  # Diarization bisa lama
+    
+    env:
+      HF_TOKEN: ${{ secrets.HF_TOKEN }}
+    
     steps:
-      - name: Checkout repo
+      - name: Checkout repository
         uses: actions/checkout@v4
-
+        
       - name: Setup Python
         uses: actions/setup-python@v5
         with:
           python-version: "3.10"
-
+          
       - name: Install system dependencies
         run: |
           sudo apt-get update
           sudo apt-get install -y ffmpeg
-
-      - name: Run WhisperX
+          
+      - name: Run WhisperX with Diarization
         run: |
           python run_whisperx.py
+          
+      - name: Upload artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: whisperx-outputs
+          path: |
+            *.json
+            *.txt
+            *.srt
+          retention-days: 7

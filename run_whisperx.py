@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """
-WHISPERX + PYANNOTE DIARIZATION - GitHub Actions Version
-Dengan HF Token Auth & Speaker Detection
+WHISPERX + PYANNOTE DIARIZATION - STABLE GitHub Actions Version
+FIXED: torch 1.13.1 for pyannote compatibility
 """
 import os
 import sys
@@ -17,63 +17,57 @@ def run(cmd):
     subprocess.check_call(cmd)
 
 def ensure_dependencies():
-    """Install dependencies yang KOMPATIBEL dengan pyannote"""
-    print("📦 Installing dependencies...")
+    """Install STABLE dependencies compatible with pyannote"""
+    print("📦 Installing compatible dependencies...")
     
     # 1. Upgrade pip
     run([sys.executable, "-m", "pip", "install", "--upgrade", "pip"])
     
-    # 2. Bersihkan dependency konflik
+    # 2. Clean conflicting dependencies
     run([
         sys.executable,
         "-m",
         "pip",
-        "uninstall",
-        "-y",
+        "uninstall", "-y",
         "torch",
         "torchaudio",
         "torchvision",
-        "pyannote.audio"
+        "pyannote.audio",
+        "whisperx"
     ])
     
-    # 3. Install torch + torchaudio yang STABIL (INI KUNCI!)
-    # Pyannote butuh torch>=1.8.1, tapi kita lock versi stabil
+    # 3. Install COMPATIBLE torch + torchaudio (CPU for CI)
+    # PYANNOTE REQUIRES OLDER TORCH. This is the key fix.
     run([
         sys.executable,
-        "-m",
-        "pip",
-        "install",
-        "torch==2.1.2",
-        "torchaudio==2.1.2",
-        "--index-url",
-        "https://download.pytorch.org/whl/cpu"
+        "-m", "pip", "install",
+        "torch==1.13.1",
+        "torchaudio==0.13.1",
+        "--index-url", "https://download.pytorch.org/whl/cpu"
     ])
     
-    # 4. Install WhisperX & dependencies lain
+    # 4. Install specific, compatible versions of WhisperX and Pyannote
     run([
         sys.executable,
-        "-m",
-        "pip",
-        "install",
-        "whisperx==3.1.1",  # Lock versi
-        "huggingface-hub",
-        "pyannote.audio==3.1.1",  # Lock versi pyannote
+        "-m", "pip", "install",
+        "whisperx==3.1.1",
+        "pyannote.audio==2.1.1"
     ])
     
-    print("✅ Dependencies installed")
+    print("✅ Compatible dependencies installed")
 
 def setup_huggingface():
-    """Setup Hugging Face token dari environment"""
+    """Setup Hugging Face token from environment"""
     hf_token = os.getenv("HF_TOKEN")
     if not hf_token:
-        print("❌ HF_TOKEN tidak ditemukan di environment")
-        print("   Pastikan sudah set di GitHub Secrets")
+        print("❌ HF_TOKEN not found in environment")
+        print("   Ensure it's set in GitHub Secrets")
         sys.exit(1)
     
-    # Set token untuk Hugging Face CLI
+    # Set token for Hugging Face CLI
     os.environ["HF_TOKEN"] = hf_token
     
-    # Login ke Hugging Face (untuk download model pyannote)
+    # Login to Hugging Face (for pyannote model download)
     from huggingface_hub import login
     try:
         login(token=hf_token, add_to_git_credential=False)
@@ -83,7 +77,7 @@ def setup_huggingface():
         sys.exit(1)
 
 def find_audio_files():
-    """Auto-detect file audio"""
+    """Auto-detect audio files"""
     return [
         f
         for f in os.listdir(".")
@@ -99,7 +93,7 @@ def format_timestamp(seconds):
     return f"{hours:02d}:{minutes:02d}:{seconds:06.3f}".replace('.', ',')
 
 def transcribe_with_diarization(audio_file):
-    """Transcribe dengan speaker diarization"""
+    """Transcribe with speaker diarization"""
     import whisperx
     import torch
     
@@ -117,10 +111,6 @@ def transcribe_with_diarization(audio_file):
         device=device,
         compute_type=compute_type,
         language=None,  # Auto-detect
-        vad_parameters={
-            "vad_onset": 0.5,
-            "vad_offset": 0.363
-        }
     )
     
     # 2. TRANSCRIBE
@@ -128,7 +118,7 @@ def transcribe_with_diarization(audio_file):
     audio = whisperx.load_audio(audio_file)
     result = model.transcribe(audio, batch_size=8)
     
-    # 3. ALIGNMENT (jika bukan English)
+    # 3. ALIGNMENT (if not English)
     print("   🔍 Aligning...")
     model_a, metadata = whisperx.load_align_model(
         language_code=result["language"],
@@ -204,9 +194,9 @@ def save_outputs(result, audio_file):
     print(f"   • {srt_path} (SRT subtitles)")
     
     # Print sample of transcript
-    print(f"\n📄 Sample transcript:")
+    print(f"\n📄 Sample transcript (first 3 segments):")
     print("=" * 60)
-    for segment in result.get("segments", [])[:3]:  # First 3 segments
+    for segment in result.get("segments", [])[:3]:
         speaker = segment.get("speaker", "UNKNOWN")
         text = segment.get("text", "").strip()
         start = segment.get("start", 0)
@@ -222,8 +212,9 @@ def save_outputs(result, audio_file):
 
 def main():
     """Main workflow"""
-    print("🚀 WhisperX + Pyannote Diarization")
+    print("🚀 WhisperX + Pyannote Diarization (STABLE VERSION)")
     print("🔐 Using HF Token for speaker detection")
+    print("🔧 Fixed: PyTorch 1.13.1 for pyannote compatibility")
     
     # Setup
     ensure_dependencies()

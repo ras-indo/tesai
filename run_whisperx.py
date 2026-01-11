@@ -1,8 +1,7 @@
 #!/usr/bin/env python3
 """
-WHISPERX + PYANNOTE DIARIZATION - FIXED DEPENDENCY VERSION
-Dengan HF Token Auth & Speaker Detection
-FIX: Mengatasi error missing numpy, nltk, pandas, dan huggingface-hub version conflict.
+WHISPERX + PYANNOTE DIARIZATION - FINAL FIXED VERSION
+FIX: NumPy 2.x incompatibility & dependency isolation
 """
 import os
 import sys
@@ -12,79 +11,100 @@ from datetime import timedelta
 
 AUDIO_EXTENSIONS = (".wav", ".mp3", ".m4a", ".flac", ".ogg", ".aac", ".opus")
 
-def run(cmd):
+def run(cmd, capture=False):
     """Helper: run shell command dengan logging"""
     print("[RUN]", " ".join(cmd))
-    result = subprocess.run(cmd, capture_output=True, text=True)
-    if result.returncode != 0:
-        print(f"STDOUT: {result.stdout}")
-        print(f"STDERR: {result.stderr}")
-    result.check_returncode()
-    return result
+    if capture:
+        result = subprocess.run(cmd, capture_output=True, text=True)
+        if result.returncode != 0:
+            print(f"STDOUT: {result.stdout}")
+            print(f"STDERR: {result.stderr}")
+        result.check_returncode()
+        return result
+    else:
+        subprocess.check_call(cmd)
 
 def ensure_dependencies():
-    """Install dependencies dengan VERSI YANG DIKUNCI dan urutan yang benar"""
-    print("📦 Installing dependencies with proper version locking...")
+    """Install dependencies dengan ISOLASI KETAT - FIX NumPy 2.x issue"""
+    print("📦 Installing dependencies with strict isolation...")
     
-    # 1. Upgrade pip & setuptools
+    # 1. HAPUS SEMUA PACKAGE yang berpotensi konflik
     run([sys.executable, "-m", "pip", "install", "--upgrade", "pip", "setuptools"])
     
-    # 2. HAPUS SEMUA dependency yang berpotensi konflik
-    run([
-        sys.executable,
-        "-m",
-        "pip",
-        "uninstall", "-y",
-        "torch",
-        "torchaudio",
-        "torchvision",
-        "pyannote.audio",
-        "whisperx",
-        "transformers",
-        "pytorch-lightning",
-        "nltk",
-        "pandas",
-        "numpy"
-    ])
+    packages_to_remove = [
+        "torch", "torchaudio", "torchvision", "pyannote.audio", "whisperx",
+        "transformers", "pytorch-lightning", "nltk", "pandas", "numpy",
+        "scipy", "scikit-learn", "librosa", "soundfile", "tqdm", "numba",
+        "jiwer", "pyannote.core", "huggingface-hub", "ffmpeg-python"
+    ]
     
-    # 3. INSTALL DEPENDENSI DASAR TERLEBIH DAHULU
-    # Install numpy, pandas, nltk terlebih dahulu
-    run([
-        sys.executable, "-m", "pip", "install",
-        "numpy==1.24.4",
-        "pandas==2.0.3",
-        "nltk==3.8.1",
-        "huggingface-hub==0.20.3",  # Versi yang kompatibel dengan transformers 4.35.2
-    ])
+    run([sys.executable, "-m", "pip", "uninstall", "-y"] + packages_to_remove)
     
-    # 4. INSTALL TORCH VERSI SPESIFIK
-    # Gunakan versi 2.1.2 yang stabil dan kompatibel
+    # 2. BUAT REQUIREMENTS FILE dengan versi yang kompatibel
+    requirements = """# Strictly compatible versions for WhisperX + Pyannote
+# MUST USE numpy<2.0.0 for pyannote.audio compatibility
+numpy==1.26.4
+pandas==2.0.3
+nltk==3.8.1
+scipy==1.11.4
+scikit-learn==1.3.2
+librosa==0.10.0
+soundfile==0.12.1
+tqdm==4.66.1
+numba==0.58.1
+jiwer==3.0.3
+pyannote.core==5.0.0
+huggingface-hub==0.20.3
+ffmpeg-python==0.2.0
+"""
+    
+    # Tulis requirements ke file
+    with open("requirements_temp.txt", "w") as f:
+        f.write(requirements)
+    
+    # 3. INSTALL BASE REQUIREMENTS DULU
+    run([sys.executable, "-m", "pip", "install", "-r", "requirements_temp.txt"])
+    
+    # 4. INSTALL TORCH dengan versi spesifik (CPU only untuk CI)
+    # IMPORTANT: Torch akan membawa numpy sendiri, tapi kita sudah lock numpy 1.26.4
     run([
         sys.executable, "-m", "pip", "install",
         "torch==2.1.2",
         "torchaudio==2.1.2",
-        "--index-url", "https://download.pytorch.org/whl/cpu"
+        "--index-url", "https://download.pytorch.org/whl/cpu",
+        "--no-deps"  # Penting: jangan install dependencies otomatis
     ])
     
-    # 5. INSTALL TRANSFORMERS dan dependensi terkait
+    # 5. INSTALL TRANSFORMERS & PYTORCH-LIGHTNING dengan constraint
     run([
         sys.executable, "-m", "pip", "install",
         "transformers==4.35.2",
         "pytorch-lightning==2.0.9",
     ])
     
-    # 6. INSTALL WHISPERX dan PYANNOTE dengan dependencies
-    # Tanpa --no-deps agar semua dependencies terinstall
+    # 6. INSTALL PYANNOTE.AUDIO dengan --no-deps (kita sudah install semua dependency)
+    run([
+        sys.executable, "-m", "pip", "install",
+        "pyannote.audio==3.1.1",
+        "--no-deps"
+    ])
+    
+    # 7. INSTALL WHISPERX dengan --no-deps
     run([
         sys.executable, "-m", "pip", "install",
         "whisperx==3.1.1",
-        "pyannote.audio==3.1.1",
+        "--no-deps"
     ])
     
-    # 7. Install dependencies tambahan
-    run([sys.executable, "-m", "pip", "install", "ffmpeg-python", "soundfile"])
+    # 8. VERIFIKASI VERSI NUMPY
+    import numpy as np
+    print(f"✅ NumPy version verified: {np.__version__}")
+    if int(np.__version__.split('.')[0]) >= 2:
+        print("❌ ERROR: NumPy version is 2.x, but pyannote.audio requires 1.x!")
+        print("   Forcing numpy 1.26.4...")
+        run([sys.executable, "-m", "pip", "install", "--force-reinstall", "numpy==1.26.4"])
     
-    # 8. Download NLTK data yang diperlukan
+    # 9. Download NLTK data
     try:
         import nltk
         nltk.download('punkt', quiet=True)
@@ -93,7 +113,11 @@ def ensure_dependencies():
     except Exception as e:
         print(f"⚠️  NLTK download warning: {e}")
     
-    print("✅ Dependencies installed successfully.")
+    # Hapus file temporary
+    if os.path.exists("requirements_temp.txt"):
+        os.remove("requirements_temp.txt")
+    
+    print("✅ All dependencies installed successfully with strict version locking")
 
 def setup_huggingface():
     """Setup Hugging Face token dari environment"""
@@ -103,10 +127,9 @@ def setup_huggingface():
         print("   Pastikan sudah set di GitHub Secrets")
         sys.exit(1)
     
-    # Set token untuk Hugging Face CLI
     os.environ["HF_TOKEN"] = hf_token
     
-    # Login ke Hugging Face (untuk download model pyannote)
+    # Login ke Hugging Face
     from huggingface_hub import login
     try:
         login(token=hf_token, add_to_git_credential=False)
@@ -117,11 +140,7 @@ def setup_huggingface():
 
 def find_audio_files():
     """Auto-detect file audio"""
-    return [
-        f
-        for f in os.listdir(".")
-        if f.lower().endswith(AUDIO_EXTENSIONS)
-    ]
+    return [f for f in os.listdir(".") if f.lower().endswith(AUDIO_EXTENSIONS)]
 
 def format_timestamp(seconds):
     """Convert seconds to SRT timestamp"""
@@ -135,9 +154,13 @@ def transcribe_with_diarization(audio_file):
     """Transcribe dengan speaker diarization"""
     import whisperx
     import torch
+    import numpy as np
     
-    # Config device - PAKAI CPU di GitHub Actions untuk stabil
-    device = "cpu"  # Force CPU untuk konsistensi di CI
+    # Verifikasi numpy version
+    print(f"   NumPy version in use: {np.__version__}")
+    
+    # Config device - PAKAI CPU di GitHub Actions
+    device = "cpu"
     compute_type = "int8"
     
     print(f"\n🎯 Processing: {audio_file}")
@@ -145,23 +168,21 @@ def transcribe_with_diarization(audio_file):
     print(f"   Using pyannote for speaker diarization")
     
     # 1. LOAD WHISPER MODEL
+    print("   📥 Loading Whisper model...")
     model = whisperx.load_model(
         "medium",
         device=device,
         compute_type=compute_type,
-        language=None,  # Auto-detect
-        vad_parameters={
-            "vad_onset": 0.5,
-            "vad_offset": 0.363
-        }
+        language=None,
+        vad_parameters={"vad_onset": 0.5, "vad_offset": 0.363}
     )
     
     # 2. TRANSCRIBE
     print("   📝 Transcribing...")
     audio = whisperx.load_audio(audio_file)
-    result = model.transcribe(audio, batch_size=4)  # Batch size lebih kecil untuk CPU
+    result = model.transcribe(audio, batch_size=2)  # Batch kecil untuk CPU
     
-    # 3. ALIGNMENT (jika bukan English)
+    # 3. ALIGNMENT
     print("   🔍 Aligning...")
     try:
         model_a, metadata = whisperx.load_align_model(
@@ -179,7 +200,7 @@ def transcribe_with_diarization(audio_file):
     except Exception as e:
         print(f"   ⚠️  Alignment skipped: {e}")
     
-    # 4. DIARIZATION (SPEAKER DETECTION)
+    # 4. DIARIZATION
     print("   👥 Diarizing speakers...")
     try:
         diarize_model = whisperx.DiarizationPipeline(
@@ -187,17 +208,14 @@ def transcribe_with_diarization(audio_file):
             device=device
         )
         
-        # Run diarization
         diarize_segments = diarize_model(audio)
-        
-        # Assign speakers to transcript
         result = whisperx.assign_word_speakers(diarize_segments, result)
+        print(f"   ✅ Diarization successful, found {len(diarize_segments)} speaker segments")
     except Exception as e:
         print(f"   ❌ Diarization failed: {e}")
         print("   💡 Ensure you've accepted terms at:")
         print("      https://hf.co/pyannote/speaker-diarization-3.1")
         print("      https://hf.co/pyannote/segmentation-3.0")
-        # Continue without diarization
         for segment in result["segments"]:
             segment["speaker"] = "SPEAKER_00"
     
@@ -207,10 +225,9 @@ def save_outputs(result, audio_file):
     """Save results in multiple formats"""
     base = os.path.splitext(audio_file)[0]
     
-    # 1. Save JSON (full output)
+    # 1. Save JSON
     json_path = f"{base}_diarized.json"
     with open(json_path, "w", encoding="utf-8") as f:
-        # Simplify JSON structure untuk mengurangi size
         simplified = {
             "audio_file": audio_file,
             "language": result.get("language", "unknown"),
@@ -226,11 +243,10 @@ def save_outputs(result, audio_file):
         }
         json.dump(simplified, f, ensure_ascii=False, indent=2)
     
-    # 2. Save TXT (readable transcript)
+    # 2. Save TXT
     txt_path = f"{base}_transcript.txt"
     with open(txt_path, "w", encoding="utf-8") as f:
-        f.write(f"Audio: {audio_file}\n")
-        f.write(f"Language: {result.get('language', 'unknown')}\n")
+        f.write(f"Audio: {audio_file}\nLanguage: {result.get('language', 'unknown')}\n")
         f.write("=" * 50 + "\n\n")
         
         for segment in result.get("segments", []):
@@ -240,10 +256,9 @@ def save_outputs(result, audio_file):
             end = segment.get("end", 0)
             
             f.write(f"[{format_timestamp(start)} → {format_timestamp(end)}] ")
-            f.write(f"Speaker {speaker}:\n")
-            f.write(f"{text}\n\n")
+            f.write(f"Speaker {speaker}:\n{text}\n\n")
     
-    # 3. Save SRT (for video subtitles)
+    # 3. Save SRT
     srt_path = f"{base}_subtitles.srt"
     with open(srt_path, "w", encoding="utf-8") as f:
         for i, segment in enumerate(result.get("segments", []), 1):
@@ -256,13 +271,12 @@ def save_outputs(result, audio_file):
             f.write(f"{format_timestamp(start)} --> {format_timestamp(end)}\n")
             f.write(f"[Speaker {speaker}] {text}\n\n")
     
-    # Print summary
     print(f"\n📁 Output files saved:")
     print(f"   • {json_path} (Full JSON)")
     print(f"   • {txt_path} (Readable transcript)")
     print(f"   • {srt_path} (SRT subtitles)")
     
-    # Print sample of transcript
+    # Print sample
     print(f"\n📄 Sample transcript (first 2 segments):")
     print("=" * 60)
     segments = result.get("segments", [])
@@ -270,21 +284,21 @@ def save_outputs(result, audio_file):
         speaker = segment.get("speaker", "UNKNOWN")
         text = segment.get("text", "").strip()
         start = segment.get("start", 0)
-        
         print(f"[{format_timestamp(start)}] Speaker {speaker}: {text}")
     
     if len(segments) > 2:
         print(f"... and {len(segments) - 2} more segments")
-    
     print("=" * 60)
     
     return json_path, txt_path, srt_path
 
 def main():
     """Main workflow"""
-    print("🚀 WhisperX + Pyannote Diarization - DEPENDENCY FIXED VERSION")
+    print("=" * 70)
+    print("🚀 WhisperX + Pyannote Diarization - FINAL FIXED VERSION")
     print("🔐 Using HF Token for speaker detection")
-    print("🔒 Locked versions: torch==2.1.2, whisperx==3.1.1, pyannote.audio==3.1.1")
+    print("🔒 Strict version locking to avoid NumPy 2.x incompatibility")
+    print("=" * 70)
     
     # Setup
     ensure_dependencies()
@@ -292,7 +306,6 @@ def main():
     
     # Find audio files
     audio_files = find_audio_files()
-    
     if not audio_files:
         print("⚠️  No audio files found")
         print(f"   Supported formats: {', '.join(AUDIO_EXTENSIONS)}")
@@ -306,7 +319,7 @@ def main():
     all_outputs = []
     for audio in audio_files:
         try:
-            print(f"\n{'='*60}")
+            print(f"\n{'='*70}")
             result, _ = transcribe_with_diarization(audio)
             outputs = save_outputs(result, audio)
             all_outputs.append(outputs)
@@ -317,14 +330,21 @@ def main():
             continue
     
     # Summary
-    print(f"\n{'='*60}")
-    print("✅ PROCESSING COMPLETE")
-    print(f"   Processed: {len(all_outputs)} file(s)")
-    for i, (json_file, txt_file, srt_file) in enumerate(all_outputs, 1):
-        print(f"\n   File {i}:")
-        print(f"      JSON: {json_file}")
-        print(f"      TXT:  {txt_file}")
-        print(f"      SRT:  {srt_file}")
+    print(f"\n{'='*70}")
+    if all_outputs:
+        print("✅ PROCESSING COMPLETE")
+        print(f"   Successfully processed: {len(all_outputs)} file(s)")
+        for i, (json_file, txt_file, srt_file) in enumerate(all_outputs, 1):
+            print(f"\n   File {i}:")
+            print(f"      JSON: {json_file}")
+            print(f"      TXT:  {txt_file}")
+            print(f"      SRT:  {srt_file}")
+    else:
+        print("❌ No files were successfully processed")
+        print("   Check the errors above and ensure:")
+        print("   1. HF_TOKEN is valid and has access to pyannote models")
+        print("   2. You've accepted terms at the Hugging Face links above")
+        print("   3. Audio file format is supported")
 
 if __name__ == "__main__":
     main()

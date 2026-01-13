@@ -268,12 +268,11 @@ def run_diarization_map(transcript_segments: List[Dict], audio_path: str, hf_tok
     If pyannote.audio is available and HF token is provided, run diarization pipeline and map
     speaker labels to transcript segments. Returns (segments_with_speakers, diarization_success_flag).
     
-    FIXED: Compatible with pyannote.audio 4.0.3 DiarizeOutput object
+    FIXED: Now correctly handles pyannote.audio 4.0.3 DiarizeOutput object
     """
     try:
         from pyannote.audio import Pipeline  # type: ignore
         import pyannote.audio
-        from pyannote.core import Segment  # type: ignore
         print(f"ℹ️ pyannote.audio version: {pyannote.audio.__version__}")
     except Exception as e:
         print(f"⚠️ pyannote.audio not available/importable: {e}")
@@ -315,71 +314,62 @@ def run_diarization_map(transcript_segments: List[Dict], audio_path: str, hf_tok
             s["speaker"] = "SPEAKER_00"
         return transcript_segments, False
 
-    # EXTRACT SPEAKER TURNS - COMPATIBLE WITH DiarizeOutput (pyannote.audio 4.x)
+    # FIX: Access the actual annotation from DiarizeOutput object
+    # In pyannote.audio 4.0.3, DiarizeOutput has 'speaker_diarization' attribute
     turns = []
     
     try:
-        # METHOD 1: Check if result has 'annotation' attribute (pyannote.audio >= 4.0)
-        if hasattr(diarization_result, 'annotation'):
-            print("ℹ️ Using 'annotation' attribute from DiarizeOutput")
-            annotation = diarization_result.annotation
+        # METHOD 1: Access speaker_diarization attribute which contains the Annotation
+        if hasattr(diarization_result, 'speaker_diarization'):
+            print("ℹ️ Accessing 'speaker_diarization' attribute")
+            annotation = diarization_result.speaker_diarization
+            
+            # Now we can iterate over the annotation
             for segment, track, label in annotation.itertracks(yield_label=True):
                 turns.append((segment.start, segment.end, label))
                 
-        # METHOD 2: Try direct iteration (if DiarizeOutput is iterable)
-        elif hasattr(diarization_result, '__iter__'):
-            print("ℹ️ Direct iteration of DiarizeOutput")
-            for segment, track, label in diarization_result.itertracks(yield_label=True):
+        # METHOD 2: Try exclusive_speaker_diarization
+        elif hasattr(diarization_result, 'exclusive_speaker_diarization'):
+            print("ℹ️ Accessing 'exclusive_speaker_diarization' attribute")
+            annotation = diarization_result.exclusive_speaker_diarization
+            
+            for segment, track, label in annotation.itertracks(yield_label=True):
                 turns.append((segment.start, segment.end, label))
                 
-        # METHOD 3: Try to get turns via get_timeline() method
-        elif hasattr(diarization_result, 'get_timeline'):
-            print("ℹ️ Using get_timeline() method")
-            for segment in diarization_result.get_timeline():
-                label = diarization_result[segment]
-                if hasattr(label, '__iter__'):
-                    for track, lbl in label:
-                        turns.append((segment.start, segment.end, str(lbl)))
-                else:
-                    turns.append((segment.start, segment.end, str(label)))
-                    
-        # METHOD 4: Try to access the raw result as a dict-like object
-        elif hasattr(diarization_result, '__getitem__'):
-            print("ℹ️ Accessing as dict-like object")
+        # METHOD 3: Direct iteration if the object itself is iterable
+        elif hasattr(diarization_result, '__iter__'):
+            print("ℹ️ Direct iteration of DiarizeOutput")
             try:
-                # This might be a pyannote.core.Annotation
                 for segment, track, label in diarization_result.itertracks(yield_label=True):
                     turns.append((segment.start, segment.end, label))
-            except:
-                # Fallback to extracting segments and labels
-                for segment in diarization_result.labels():
-                    for track in diarization_result.get_labels(segment):
-                        label = diarization_result[segment, track]
-                        turns.append((segment.start, segment.end, str(label)))
+            except AttributeError:
+                # Try different iteration pattern
+                for item in diarization_result:
+                    if hasattr(item, 'segment') and hasattr(item, 'speaker'):
+                        turns.append((item.segment.start, item.segment.end, item.speaker))
                         
         else:
-            # If none of the above work, try to print the object structure for debugging
-            print(f"⚠️ Unknown diarization result structure. Type: {type(diarization_result)}")
+            print(f"❌ Cannot extract annotation from DiarizeOutput")
             print(f"ℹ️ Available attributes: {dir(diarization_result)}")
-            raise AttributeError("Could not extract speaker turns from diarization result")
+            raise ValueError("DiarizeOutput object doesn't have expected attributes")
             
     except Exception as e:
         print(f"⚠️ Could not extract diarization turns: {e}")
-        # Try one more fallback: check if it's already a list of turns
+        # Last resort: check if we can serialize and parse
         try:
-            if isinstance(diarization_result, (list, tuple)):
-                print("ℹ️ Result is list/tuple, trying to parse directly")
-                for item in diarization_result:
-                    if isinstance(item, (list, tuple)) and len(item) >= 3:
-                        turns.append((float(item[0]), float(item[1]), str(item[2])))
-        except:
-            pass
-            
-        if not turns:
-            print("❌ All extraction methods failed. Falling back to single speaker.")
-            for s in transcript_segments:
-                s["speaker"] = "SPEAKER_00"
-            return transcript_segments, False
+            print("ℹ️ Trying to serialize and parse diarization result")
+            serialized = diarization_result.serialize()
+            if isinstance(serialized, dict) and 'annotation' in serialized:
+                # This is a more complex case, but let's try
+                import json
+                data = json.loads(json.dumps(serialized))
+                if 'annotation' in data:
+                    for segment_data in data['annotation']:
+                        if 'segment' in segment_data and 'label' in segment_data:
+                            segment = segment_data['segment']
+                            turns.append((segment['start'], segment['end'], segment_data['label']))
+        except Exception as e2:
+            print(f"⚠️ Serialization fallback also failed: {e2}")
 
     if not turns:
         print("⚠️ Diarization returned no turns. Falling back to single speaker.")

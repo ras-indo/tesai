@@ -20,30 +20,37 @@ jobs:
         with:
           python-version: "3.10"
 
-      - name: 📦 Install Dependencies
+      - name: 📦 Install System Dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y ffmpeg
+
+      - name: 🔧 Install Python Dependencies
         run: |
           pip install --upgrade pip
           
-          # Core ML libraries
-          pip install torch torchaudio --index-url https://download.pytorch.org/whl/cpu
-          pip install faster-whisper
-          pip install pyannote.audio
-          pip install numpy<2
+          # Install torch yang kompatibel dengan semua library
+          pip install torch==2.8.0+cpu torchaudio==2.8.0+cpu --index-url https://download.pytorch.org/whl/cpu
           
-          # Audio processing
+          # Install faster-whisper dengan dependency management
+          pip install faster-whisper
+          
+          # Install pyannote.audio dengan versi yang kompatibel
+          pip install pyannote.audio==4.1.1
+          
+          # Install lainnya dengan versi tetap
+          pip install "numpy<2"
           pip install soundfile librosa
 
-      - name: 🎵 Install FFmpeg
-        run: sudo apt-get update && sudo apt-get install -y ffmpeg
-
-      - name: 🚀 Run Processing
+      - name: 🚀 Run Audio Processing
         run: |
           if [ -z "${HF_TOKEN}" ]; then
-            echo "⚠️  HF_TOKEN not set (continuing without diarization)"
+            echo "⚠️ HF_TOKEN not set (continuing without diarization)"
           fi
-          python run_diarization.py
+          python audio_processor.py
 
       - name: 📤 Upload Results
+        if: always()
         uses: actions/upload-artifact@v4
         with:
           name: transcription-results
@@ -51,3 +58,4 @@ jobs:
             *_diarized.json
             *_transcript.txt
             *_subtitles.srt
+          retention-days: 7

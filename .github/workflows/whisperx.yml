@@ -23,23 +23,18 @@ jobs:
       - name: 📦 Install System Dependencies
         run: |
           sudo apt-get update
-          sudo apt-get install -y ffmpeg
+          sudo apt-get install -y ffmpeg libsndfile1
 
       - name: 🔧 Install Python Dependencies
         run: |
           pip install --upgrade pip
-          
-          # Install torch yang kompatibel dengan semua library
+          # Install compatible PyTorch version
           pip install torch==2.8.0+cpu torchaudio==2.8.0+cpu --index-url https://download.pytorch.org/whl/cpu
-          
-          # Install faster-whisper dengan dependency management
+          # Install the CORRECT version of pyannote.audio
+          pip install pyannote.audio==4.0.3
+          # Install other dependencies
           pip install faster-whisper
-          
-          # Install pyannote.audio dengan versi yang kompatibel
-          pip install pyannote.audio==4.1.1
-          
-          # Install lainnya dengan versi tetap
-          pip install "numpy<2"
+          pip install "numpy<2.0.0"
           pip install soundfile librosa
 
       - name: 🚀 Run Audio Processing

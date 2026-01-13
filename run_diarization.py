@@ -133,8 +133,7 @@ def ensure_dependencies() -> Dict[str, bool]:
         print("⚠️ onnxruntime not available (install only if you need it)")
 
     # pyannote.audio: try several fallbacks but DO NOT abort if unavailable
-    # KEY FIX: Target pyannote.audio 2.1.1 for API compatibility with your script
-    pyannote_versions_to_try = ["2.1.1", "4.1.1", "4.0.3", "3.4.0"]
+    pyannote_versions_to_try = ["4.0.3", "4.1.1", "3.1.1", "2.1.1"]
     pyannote_ok = False
     try:
         import importlib.util
@@ -269,13 +268,14 @@ def run_diarization_map(transcript_segments: List[Dict], audio_path: str, hf_tok
     If pyannote.audio is available and HF token is provided, run diarization pipeline and map
     speaker labels to transcript segments. Returns (segments_with_speakers, diarization_success_flag).
     
-    FIXED: Uses correct API for newer pyannote versions (2.1.1+) with compatibility fallback.
+    COMPATIBLE with pyannote.audio 4.x API.
     """
     try:
         from pyannote.audio import Pipeline  # type: ignore
+        import pyannote.audio
+        print(f"ℹ️ pyannote.audio version: {pyannote.audio.__version__}")
     except Exception as e:
-        print("⚠️ pyannote.audio not available/importable:", e)
-        # fallback: tag default speaker for all
+        print(f"⚠️ pyannote.audio not available/importable: {e}")
         for s in transcript_segments:
             s["speaker"] = "SPEAKER_00"
         return transcript_segments, False
@@ -286,21 +286,22 @@ def run_diarization_map(transcript_segments: List[Dict], audio_path: str, hf_tok
             s["speaker"] = "SPEAKER_00"
         return transcript_segments, False
 
+    # FIX: Use correct parameter name 'token' (not 'use_auth_token') for pyannote.audio 4.x
     try:
-        # KEY FIX: Use correct pipeline name and parameter name for auth token
-        # Older versions use use_auth_token, newer ones might use token
-        # The '@2.1' suffix ensures compatibility with the correct API
+        # For pyannote.audio >= 4.0, use 'token' parameter
         pipeline = Pipeline.from_pretrained(
-            "pyannote/speaker-diarization@2.1",  # Explicit version for API compatibility[citation:8]
-            use_auth_token=hf_token  # Parameter name for older API[citation:1][citation:10]
+            "pyannote/speaker-diarization-3.1",  # Model name for 4.x
+            token=hf_token
         )
+        print("✅ Diarization pipeline loaded successfully.")
     except Exception as e:
-        print(f"⚠️ Failed to load pyannote pipeline from HF: {e}")
-        # Fallback: try without version specifier
+        print(f"⚠️ Failed to load pyannote pipeline: {e}")
+        # Fallback: try older model name
         try:
             pipeline = Pipeline.from_pretrained("pyannote/speaker-diarization", token=hf_token)
+            print("✅ Loaded fallback pipeline.")
         except Exception as e2:
-            print(f"⚠️ Fallback pipeline load also failed: {e2}")
+            print(f"❌ Fallback pipeline load also failed: {e2}")
             for s in transcript_segments:
                 s["speaker"] = "SPEAKER_00"
             return transcript_segments, False
@@ -314,38 +315,19 @@ def run_diarization_map(transcript_segments: List[Dict], audio_path: str, hf_tok
             s["speaker"] = "SPEAKER_00"
         return transcript_segments, False
 
-    # KEY FIX: Updated API for accessing diarization results
-    # Newer pyannote versions (2.1.1+) have different API than older ones[citation:1][citation:8]
-    # Build list of diarization turns with compatibility for different API versions
+    # Extract speaker turns using correct API for pyannote.audio 4.x
     turns = []
-    
     try:
-        # Method 1: Try the OLD API first (for pyannote.audio < 2.1)
+        # In pyannote.audio 4.x, diarization is a pyannote.core.Annotation object
+        # The correct way to iterate is as (segment, track, label)
         for turn, _, label in diarization.itertracks(yield_label=True):
             turns.append((turn.start, turn.end, label))
-        print("ℹ️ Used legacy itertracks() API")
-        
-    except AttributeError:
-        try:
-            # Method 2: Try the NEWER API (pyannote.audio >= 2.1)
-            # The diarization object itself is iterable[citation:8]
-            for segment, track, label in diarization.iterturns(yield_label=True):
-                turns.append((segment.start, segment.end, label))
-            print("ℹ️ Used iterturns() API")
-            
-        except AttributeError:
-            try:
-                # Method 3: Try the LATEST API - direct iteration
-                # In some versions, diarization is directly iterable as (segment, speaker) pairs
-                for segment, speaker in diarization:
-                    turns.append((segment.start, segment.end, speaker))
-                print("ℹ️ Used direct iteration API")
-                
-            except Exception as e:
-                print(f"⚠️ Could not parse diarization output with any known API: {e}")
-                for s in transcript_segments:
-                    s["speaker"] = "SPEAKER_00"
-                return transcript_segments, False
+        print(f"ℹ️ Extracted {len(turns)} speaker turns using itertracks().")
+    except Exception as e:
+        print(f"⚠️ Could not extract diarization turns: {e}")
+        for s in transcript_segments:
+            s["speaker"] = "SPEAKER_00"
+        return transcript_segments, False
 
     if not turns:
         print("⚠️ Diarization returned no turns. Falling back to single speaker.")
@@ -353,7 +335,7 @@ def run_diarization_map(transcript_segments: List[Dict], audio_path: str, hf_tok
             s["speaker"] = "SPEAKER_00"
         return transcript_segments, False
 
-    # For each transcript segment, choose the label with maximum overlap
+    # Map speaker labels to transcript segments by overlap
     def overlap(a_start, a_end, b_start, b_end) -> float:
         return max(0.0, min(a_end, b_end) - max(a_start, b_start))
 
@@ -369,7 +351,8 @@ def run_diarization_map(transcript_segments: List[Dict], audio_path: str, hf_tok
                 best_label = lbl
         seg["speaker"] = best_label if best_label is not None else "SPEAKER_00"
 
-    print(f"✅ Diarization mapping complete. Found {len(set([t[2] for t in turns]))} speakers.")
+    unique_speakers = len(set([t[2] for t in turns]))
+    print(f"✅ Diarization mapping complete. Found {unique_speakers} speaker(s).")
     return transcript_segments, True
 
 

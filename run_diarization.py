@@ -4,483 +4,297 @@ run_diarization.py
 
 Stable transcription + optional speaker diarization runner for CI (GitHub Actions)
 - Uses faster-whisper for transcription (offline, CPU-friendly)
-- Attempts to use pyannote.audio for speaker diarization (if available & HF_TOKEN provided)
-- Safe installation fallback for pyannote.audio (tries several known versions)
+- Optional pyannote.audio speaker diarization if HF_TOKEN provided
+- Detects language first → switches to language-specific model for accuracy
 - Produces outputs: <audio>_diarized.json, <audio>_transcript.txt, <audio>_subtitles.srt
-
-Usage:
- - Ensure HF_TOKEN is set in environment if you want diarization with gated HF models:
-     export HF_TOKEN="hf_xxx"
- - Prefer installing dependencies in workflow; this script will try safe installs/fallbacks
-   for pyannote.audio but will continue even if diarization is unavailable.
-
-Notes:
- - This script is written to be robust in CI / ephemeral environments.
- - It favors safe continuations over hard failures so transcription completes even if diarization fails.
 """
 
 from __future__ import annotations
-
-import os
-import sys
-import json
-import subprocess
-import traceback
+import os, sys, json, subprocess, traceback
 from datetime import timedelta
 from typing import List, Dict, Tuple, Optional
 
 AUDIO_EXTENSIONS = (".wav", ".mp3", ".m4a", ".flac", ".ogg", ".aac", ".opus")
 
-
 # -------------------------
 # Helpers
 # -------------------------
 def run(cmd: List[str]) -> subprocess.CompletedProcess:
-    """Run shell command and return CompletedProcess. Print output streams."""
     print("[RUN]", " ".join(cmd))
     proc = subprocess.run(cmd, capture_output=True, text=True)
-    if proc.stdout:
-        print(proc.stdout, end="")
-    if proc.stderr:
-        print(proc.stderr, end="", file=sys.stderr)
+    if proc.stdout: print(proc.stdout, end="")
+    if proc.stderr: print(proc.stderr, end="", file=sys.stderr)
     return proc
 
-
 def format_timestamp(seconds: float) -> str:
-    """Format seconds float to SRT timestamp 'HH:MM:SS,mmm'"""
     td = timedelta(seconds=seconds)
     hours = td.seconds // 3600 + td.days * 24
     minutes = (td.seconds % 3600) // 60
     secs = td.seconds % 60 + td.microseconds / 1_000_000
     return f"{hours:02d}:{minutes:02d}:{secs:06.3f}".replace(".", ",")
 
-
 def find_audio_files() -> List[str]:
     return [f for f in os.listdir(".") if f.lower().endswith(AUDIO_EXTENSIONS)]
-
 
 # -------------------------
 # Dependency / Preflight
 # -------------------------
 def ensure_dependencies() -> Dict[str, bool]:
-    """
-    Try to ensure minimal dependencies are present. Install light-weight packages if missing.
-    For heavy packages (torch / pyannote) it's better to pre-install in workflow.
-    Returns dict of availability flags.
-    """
-    flags = {
-        "numpy": False,
-        "torch": False,
-        "faster_whisper": False,
-        "pyannote": False,
-        "onnxruntime": False,
-        "nltk": False,
-    }
+    flags = { "numpy": False, "torch": False, "faster_whisper": False, "pyannote": False, "onnxruntime": False, "nltk": False }
 
-    # Lightweight packages we can safely pip install here if needed
-    to_ensure = [
-        ("numpy", ["numpy<2"]),
-        ("nltk", ["nltk==3.8.1"]),
-    ]
+    to_ensure = [("numpy", ["numpy<2"]), ("nltk", ["nltk==3.8.1"])]
     for name, specs in to_ensure:
-        try:
-            __import__(name)
-            flags[name] = True
-            print(f"✅ {name} available")
+        try: __import__(name); flags[name]=True; print(f"✅ {name} available")
         except Exception:
-            # try install
             for spec in specs:
                 cp = run([sys.executable, "-m", "pip", "install", spec])
-                if cp.returncode == 0:
-                    try:
-                        __import__(name)
-                        flags[name] = True
-                        print(f"✅ Installed & imported {name} ({spec})")
-                        break
-                    except Exception as e:
-                        print(f"⚠️ Installed {spec} but import failed: {e}")
-                else:
-                    print(f"⚠️ pip install {spec} failed (rc={cp.returncode})")
-    # Check heavy modules (we do NOT force-install torch/pyannote here except safe fallback attempts)
-    try:
-        import torch  # type: ignore
-        flags["torch"] = True
-        print("✅ torch available:", torch.__version__)
-    except Exception:
-        print("⚠️ torch not available. Please preinstall torch in CI for best results.")
+                if cp.returncode==0:
+                    try: __import__(name); flags[name]=True; print(f"✅ Installed & imported {name} ({spec})"); break
+                    except Exception as e: print(f"⚠️ Installed {spec} but import failed: {e}")
+                else: print(f"⚠️ pip install {spec} failed (rc={cp.returncode})")
 
-    try:
-        import faster_whisper  # type: ignore
-        flags["faster_whisper"] = True
-        print("✅ faster_whisper available")
+    try: import torch; flags["torch"]=True; print("✅ torch available:", torch.__version__)
+    except Exception: print("⚠️ torch not available. Preinstall for best results.")
+
+    try: import faster_whisper; flags["faster_whisper"]=True; print("✅ faster_whisper available")
     except Exception:
-        print("⚠️ faster_whisper not available. Attempting to install it now...")
+        print("⚠️ faster_whisper not available. Attempting install...")
         cp = run([sys.executable, "-m", "pip", "install", "faster-whisper"])
-        if cp.returncode == 0:
-            try:
-                import faster_whisper  # type: ignore
-                flags["faster_whisper"] = True
-                print("✅ faster_whisper installed")
-            except Exception as e:
-                print("⚠️ faster_whisper import failed after install:", e)
+        if cp.returncode==0:
+            try: import faster_whisper; flags["faster_whisper"]=True; print("✅ faster_whisper installed")
+            except Exception as e: print("⚠️ faster_whisper import failed after install:", e)
 
-    # ONNX runtime check
-    try:
-        import onnxruntime  # type: ignore
-        flags["onnxruntime"] = True
-        print("✅ onnxruntime available")
-    except Exception:
-        print("⚠️ onnxruntime not available (install only if you need it)")
+    try: import onnxruntime; flags["onnxruntime"]=True; print("✅ onnxruntime available")
+    except Exception: print("⚠️ onnxruntime not available (optional)")
 
-    # pyannote.audio: try several fallbacks but DO NOT abort if unavailable
     pyannote_versions_to_try = ["4.0.3", "4.1.1", "3.1.1", "2.1.1"]
-    pyannote_ok = False
     try:
         import importlib.util
-
-        if importlib.util.find_spec("pyannote.audio") is not None:
-            flags["pyannote"] = True
-            pyannote_ok = True
-            print("✅ pyannote.audio already installed")
+        if importlib.util.find_spec("pyannote.audio") is not None: flags["pyannote"]=True; print("✅ pyannote.audio already installed")
         else:
-            # Try pip installing one of pinned versions (best-effort)
             for v in pyannote_versions_to_try:
-                print(f"ℹ️ Attempting to pip install pyannote.audio=={v} (best-effort; may fail on some runners)")
+                print(f"ℹ️ Attempting pip install pyannote.audio=={v}")
                 cp = run([sys.executable, "-m", "pip", "install", f"pyannote.audio=={v}"])
-                if cp.returncode == 0:
-                    try:
-                        __import__("pyannote.audio")
-                        flags["pyannote"] = True
-                        pyannote_ok = True
-                        print(f"✅ Installed pyannote.audio=={v}")
-                        break
-                    except Exception as e:
-                        print(f"⚠️ Installed pyannote.audio=={v} but import failed: {e}")
-                else:
-                    print(f"⚠️ pip install pyannote.audio=={v} failed (rc={cp.returncode})")
-    except Exception as e:
-        print("⚠️ Exception while probing pyannote:", e)
+                if cp.returncode==0:
+                    try: __import__("pyannote.audio"); flags["pyannote"]=True; print(f"✅ Installed pyannote.audio=={v}"); break
+                    except Exception as e: print(f"⚠️ Installed pyannote.audio=={v} but import failed: {e}")
+                else: print(f"⚠️ pip install pyannote.audio=={v} failed")
+    except Exception as e: print("⚠️ Exception while probing pyannote:", e)
 
-    # Final: report
     print("---- preflight summary ----")
-    for k, v in flags.items():
-        print(f"{k}: {'OK' if v else 'MISSING/FAIL'}")
+    for k,v in flags.items(): print(f"{k}: {'OK' if v else 'MISSING/FAIL'}")
     print("---------------------------")
     return flags
-
 
 # -------------------------
 # Hugging Face helpers
 # -------------------------
 def get_hf_token() -> Optional[str]:
-    token = os.getenv("HF_TOKEN") or os.getenv("HUGGINGFACE_TOKEN")
-    return token
-
+    return os.getenv("HF_TOKEN") or os.getenv("HUGGINGFACE_TOKEN")
 
 def setup_hf_cli_login(token: Optional[str]) -> None:
-    """
-    Optionally login using huggingface_hub.login if token present.
-    Use add_to_git_credential=False to avoid altering git config in CI.
-    """
-    if not token:
-        print("ℹ️ No HF_TOKEN found in environment; gated HF models will not be accessible.")
-        return
+    if not token: print("ℹ️ No HF_TOKEN found; gated HF models will not be accessible."); return
     try:
-        from huggingface_hub import login  # type: ignore
-
+        from huggingface_hub import login
         login(token=token, add_to_git_credential=False)
-        print("✅ Hugging Face login (via huggingface_hub.login) succeeded")
-    except Exception as e:
-        print("⚠️ huggingface_hub.login failed:", e)
-        # continue without failing
-
+        print("✅ Hugging Face login succeeded")
+    except Exception as e: print("⚠️ huggingface_hub.login failed:", e)
 
 # -------------------------
-# Core processing
+# Language detection & mapping
 # -------------------------
-def transcribe_with_faster_whisper(audio_path: str, device: str = "cpu") -> Tuple[Dict, str]:
-    """
-    Transcribe using faster-whisper. Returns (result_dict, audio_path).
-    result_dict: { "language": str, "segments": [ {start,end,text,words?} ] }
-    """
-    try:
-        from faster_whisper import WhisperModel  # type: ignore
-    except Exception:
-        raise RuntimeError("faster_whisper is not installed or import failed.")
+def detect_language(audio_path: str, device: str = "cpu") -> str:
+    from faster_whisper import WhisperModel
+    model = WhisperModel(os.getenv("FW_MODEL","large-v3"), device=device, compute_type="int8")
+    segments, info = model.transcribe(audio_path, language=None, beam_size=2, word_timestamps=False)
+    lang = getattr(info,"language",None) or info.get("language",None) or "unknown"
+    print(f"🔍 Detected language: {lang}")
+    return lang
 
-    print(f"Transcribing {audio_path} with faster-whisper (device={device})")
-    model_size = os.getenv("FW_MODEL", "large-v3")  # allow override
-    compute_type = os.getenv("FW_COMPUTE", "int8")  # int8 on CPU is common
+LANG_MAP = {
+    "en":"english","ar":"arabic","az":"azerbaijani","bn":"bengali","bg":"bulgarian",
+    "ca":"catalan","zh":"chinese","hr":"croatian","cs":"czech","da":"danish",
+    "nl":"dutch","et":"estonian","fi":"finnish","fr":"french","de":"german",
+    "el":"greek","gu":"gujarati","ht":"haitian","he":"hebrew","hi":"hindi",
+    "hu":"hungarian","is":"icelandic","id":"indonesian","it":"italian","ja":"japanese",
+    "kn":"kannada","kk":"kazakh","ko":"korean","lv":"latvian","lt":"lithuanian",
+    "mk":"macedonian","ms":"malay","ml":"malayalam","mr":"marathi","mn":"mongolian",
+    "ne":"nepali","no":"norwegian","pa":"punjabi","fa":"persian","pl":"polish",
+    "pt":"portuguese","ro":"romanian","ru":"russian","sr":"serbian","si":"sinhala",
+    "sk":"slovak","sl":"slovenian","es":"spanish","sv":"swedish","ta":"tamil",
+    "te":"telugu","th":"thai","tr":"turkish","uk":"ukrainian","ur":"urdu",
+    "uz":"uzbek","vi":"vietnamese"
+}
+
+# -------------------------
+# Transcription with language-specific model
+# -------------------------
+def transcribe_with_faster_whisper(audio_path: str, device: str = "cpu") -> Tuple[Dict,str]:
+    from faster_whisper import WhisperModel
+    detected_lang = detect_language(audio_path, device=device)
+    specific_lang = LANG_MAP.get(detected_lang.lower(), None)
+    if specific_lang: print(f"⚡ Using language-specific model: {specific_lang}")
+    else: print(f"⚠️ Unknown language '{detected_lang}', fallback to multilingual"); specific_lang=None
+
+    model_size = os.getenv("FW_MODEL","large-v3")
+    compute_type = os.getenv("FW_COMPUTE","int8")
     model = WhisperModel(model_size, device=device, compute_type=compute_type)
+    kwargs = {"beam_size":5,"word_timestamps":True}
+    if specific_lang: kwargs["language"]=specific_lang
+    transcription = model.transcribe(audio_path, **kwargs)
 
-    # The faster-whisper transcribe API can accept an audio path
-    # It returns segments and info (library versions vary). We'll handle both styles.
-    try:
-        # prefer file path API (returns segments, info)
-        transcription = model.transcribe(audio_path, beam_size=5, word_timestamps=True)
-    except TypeError:
-        # fallback if signature differs
-        transcription = model.transcribe(audio_path, beam_size=5)
-
-    # Normalize transcription into a result dict
-    segments = []
-    language = "unknown"
-    # transcription might be (segments, info) or a dict
-    if isinstance(transcription, tuple) and len(transcription) >= 1:
-        segs = transcription[0]
-        info = transcription[1] if len(transcription) > 1 else {}
-        # iterate segments; segments might be dataclass-like objects with start,end,text,words
+    segments=[]
+    language = specific_lang or detected_lang or "unknown"
+    if isinstance(transcription, tuple) and len(transcription)>=1:
+        segs = transcription[0]; info = transcription[1] if len(transcription)>1 else {}
         for s in segs:
-            start = getattr(s, "start", getattr(s, "start_time", 0.0))
-            end = getattr(s, "end", getattr(s, "end_time", start))
-            text = getattr(s, "text", getattr(s, "content", "")).strip()
-            # words may be available as s.words; otherwise leave empty
-            words = []
-            wlist = getattr(s, "words", None)
+            start = getattr(s,"start",getattr(s,"start_time",0.0))
+            end = getattr(s,"end",getattr(s,"end_time",start))
+            text = getattr(s,"text",getattr(s,"content","")).strip()
+            words=[]
+            wlist=getattr(s,"words",None)
             if wlist:
                 for w in wlist:
-                    wstart = getattr(w, "start", None)
-                    wend = getattr(w, "end", None)
-                    wtext = getattr(w, "word", getattr(w, "text", ""))
-                    words.append({"word": wtext, "start": wstart, "end": wend})
-            segments.append({"start": float(start), "end": float(end), "text": text, "words": words})
-        language = info.get("language") if isinstance(info, dict) else getattr(info, "language", language)
+                    wstart=getattr(w,"start",None)
+                    wend=getattr(w,"end",None)
+                    wtext=getattr(w,"word",getattr(w,"text",""))
+                    words.append({"word":wtext,"start":wstart,"end":wend})
+            segments.append({"start":float(start),"end":float(end),"text":text,"words":words})
+        language = info.get("language") if isinstance(info, dict) else getattr(info,"language",language)
     elif isinstance(transcription, dict):
-        # some newer APIs may already return dict
-        language = transcription.get("language", "unknown")
-        for s in transcription.get("segments", []):
-            segments.append({
-                "start": float(s.get("start", 0.0)),
-                "end": float(s.get("end", 0.0)),
-                "text": s.get("text", "").strip(),
-                "words": s.get("words", []),
-            })
-    else:
-        raise RuntimeError("Unexpected transcription output format from faster-whisper")
+        language = transcription.get("language",language)
+        for s in transcription.get("segments",[]):
+            segments.append({"start":float(s.get("start",0.0)),"end":float(s.get("end",0.0)),"text":s.get("text","").strip(),"words":s.get("words",[])})
+    result={"language":language,"segments":segments}
+    print(f"✅ Transcription done: {len(segments)} segments, language={result['language']}")
+    return result,audio_path
 
-    result = {"language": language or "unknown", "segments": segments}
-    print(f"Transcription produced {len(segments)} segments; language={result['language']}")
-    return result, audio_path
-
-
+# -------------------------
+# Diarization mapping
+# -------------------------
 def run_diarization_map(transcript_segments: List[Dict], audio_path: str, hf_token: Optional[str]) -> Tuple[List[Dict], bool]:
-    """
-    If pyannote.audio is available and HF token is provided, run diarization pipeline and map
-    speaker labels to transcript segments. Returns (segments_with_speakers, diarization_success_flag).
-    
-    FIXED: Now correctly handles pyannote.audio 4.0.3 DiarizeOutput object
-    """
     try:
-        from pyannote.audio import Pipeline  # type: ignore
+        from pyannote.audio import Pipeline
         import pyannote.audio
-        print(f"ℹ️ pyannote.audio version: {pyannote.audio.__version__}")
     except Exception as e:
-        print(f"⚠️ pyannote.audio not available/importable: {e}")
-        for s in transcript_segments:
-            s["speaker"] = "SPEAKER_00"
+        for s in transcript_segments: s["speaker"]="SPEAKER_00"
         return transcript_segments, False
 
     if not hf_token:
-        print("⚠️ No HF_TOKEN provided — skipping HF gated diarization. Using default speaker labels.")
-        for s in transcript_segments:
-            s["speaker"] = "SPEAKER_00"
+        for s in transcript_segments: s["speaker"]="SPEAKER_00"
         return transcript_segments, False
 
     try:
-        # For pyannote.audio >= 4.0, use 'token' parameter
-        pipeline = Pipeline.from_pretrained(
-            "pyannote/speaker-diarization-3.1",
-            token=hf_token
-        )
-        print("✅ Diarization pipeline loaded successfully.")
-    except Exception as e:
-        print(f"⚠️ Failed to load pyannote pipeline: {e}")
-        try:
-            pipeline = Pipeline.from_pretrained("pyannote/speaker-diarization", token=hf_token)
-            print("✅ Loaded fallback pipeline.")
-        except Exception as e2:
-            print(f"❌ Fallback pipeline load also failed: {e2}")
-            for s in transcript_segments:
-                s["speaker"] = "SPEAKER_00"
-            return transcript_segments, False
-
-    # Run diarization
-    try:
-        diarization_result = pipeline(audio_path)
-        print(f"ℹ️ Diarization result type: {type(diarization_result)}")
-    except Exception as e:
-        print(f"⚠️ Diarization pipeline run failed: {e}")
-        for s in transcript_segments:
-            s["speaker"] = "SPEAKER_00"
+        pipeline = Pipeline.from_pretrained("pyannote/speaker-diarization-3.1", token=hf_token)
+    except Exception:
+        for s in transcript_segments: s["speaker"]="SPEAKER_00"
         return transcript_segments, False
 
-    # FIX: Access the actual annotation from DiarizeOutput object
-    # In pyannote.audio 4.0.3, DiarizeOutput has 'speaker_diarization' attribute
-    turns = []
-    
+    try: diarization_result = pipeline(audio_path)
+    except Exception:
+        for s in transcript_segments: s["speaker"]="SPEAKER_00"
+        return transcript_segments, False
+
+    turns=[]
     try:
-        # METHOD 1: Access speaker_diarization attribute which contains the Annotation
-        if hasattr(diarization_result, 'speaker_diarization'):
-            print("ℹ️ Accessing 'speaker_diarization' attribute")
+        if hasattr(diarization_result,'speaker_diarization'):
             annotation = diarization_result.speaker_diarization
-            
-            # Now we can iterate over the annotation
             for segment, track, label in annotation.itertracks(yield_label=True):
                 turns.append((segment.start, segment.end, label))
-                
-        # METHOD 2: Try exclusive_speaker_diarization
-        elif hasattr(diarization_result, 'exclusive_speaker_diarization'):
-            print("ℹ️ Accessing 'exclusive_speaker_diarization' attribute")
+        elif hasattr(diarization_result,'exclusive_speaker_diarization'):
             annotation = diarization_result.exclusive_speaker_diarization
-            
             for segment, track, label in annotation.itertracks(yield_label=True):
                 turns.append((segment.start, segment.end, label))
-                
-        # METHOD 3: Direct iteration if the object itself is iterable
-        elif hasattr(diarization_result, '__iter__'):
-            print("ℹ️ Direct iteration of DiarizeOutput")
-            try:
-                for segment, track, label in diarization_result.itertracks(yield_label=True):
-                    turns.append((segment.start, segment.end, label))
-            except AttributeError:
-                # Try different iteration pattern
-                for item in diarization_result:
-                    if hasattr(item, 'segment') and hasattr(item, 'speaker'):
-                        turns.append((item.segment.start, item.segment.end, item.speaker))
-                        
-        else:
-            print(f"❌ Cannot extract annotation from DiarizeOutput")
-            print(f"ℹ️ Available attributes: {dir(diarization_result)}")
-            raise ValueError("DiarizeOutput object doesn't have expected attributes")
-            
-    except Exception as e:
-        print(f"⚠️ Could not extract diarization turns: {e}")
-        # Last resort: check if we can serialize and parse
-        try:
-            print("ℹ️ Trying to serialize and parse diarization result")
-            serialized = diarization_result.serialize()
-            if isinstance(serialized, dict) and 'annotation' in serialized:
-                # This is a more complex case, but let's try
-                import json
-                data = json.loads(json.dumps(serialized))
-                if 'annotation' in data:
-                    for segment_data in data['annotation']:
-                        if 'segment' in segment_data and 'label' in segment_data:
-                            segment = segment_data['segment']
-                            turns.append((segment['start'], segment['end'], segment_data['label']))
-        except Exception as e2:
-            print(f"⚠️ Serialization fallback also failed: {e2}")
+        elif hasattr(diarization_result,'__iter__'):
+            for segment, track, label in diarization_result.itertracks(yield_label=True):
+                turns.append((segment.start, segment.end, label))
+    except Exception:
+        for s in transcript_segments: s["speaker"]="SPEAKER_00"
+        return transcript_segments, False
 
     if not turns:
-        print("⚠️ Diarization returned no turns. Falling back to single speaker.")
-        for s in transcript_segments:
-            s["speaker"] = "SPEAKER_00"
+        for s in transcript_segments: s["speaker"]="SPEAKER_00"
         return transcript_segments, False
 
-    print(f"ℹ️ Successfully extracted {len(turns)} speaker turns")
-    
-    # Map speaker labels to transcript segments by overlap
-    def overlap(a_start, a_end, b_start, b_end) -> float:
-        return max(0.0, min(a_end, b_end) - max(a_start, b_start))
+    def overlap(a_start,a_end,b_start,b_end) -> float:
+        return max(0.0, min(a_end,b_end)-max(a_start,b_start))
 
     for seg in transcript_segments:
-        s0 = float(seg.get("start", 0.0))
-        e0 = float(seg.get("end", s0 + 0.001))
-        best_label = None
-        best_ov = 0.0
-        for (t0, t1, lbl) in turns:
-            ov = overlap(s0, e0, float(t0), float(t1))
-            if ov > best_ov:
-                best_ov = ov
-                best_label = lbl
-        seg["speaker"] = best_label if best_label is not None else "SPEAKER_00"
+        s0=float(seg.get("start",0.0))
+        e0=float(seg.get("end",s0+0.001))
+        best_label=None
+        best_ov=0.0
+        for t0,t1,lbl in turns:
+            ov=overlap(s0,e0,float(t0),float(t1))
+            if ov>best_ov: best_ov=ov; best_label=lbl
+        seg["speaker"]=best_label if best_label else "SPEAKER_00"
 
-    unique_speakers = len(set([t[2] for t in turns]))
-    print(f"✅ Diarization mapping complete. Found {unique_speakers} speaker(s).")
     return transcript_segments, True
 
-
 # -------------------------
-# Output serialization
+# Save outputs
 # -------------------------
-def save_outputs(result: Dict, audio_file: str) -> Tuple[str, str, str]:
+def save_outputs(result: Dict, audio_file: str) -> Tuple[str,str,str]:
     base = os.path.splitext(audio_file)[0]
     json_path = f"{base}_diarized.json"
     txt_path = f"{base}_transcript.txt"
     srt_path = f"{base}_subtitles.srt"
 
-    # Simplified JSON (store segments as-is)
-    with open(json_path, "w", encoding="utf-8") as fh:
-        json.dump({"audio_file": audio_file, "language": result.get("language", "unknown"), "segments": result.get("segments", [])}, fh, ensure_ascii=False, indent=2)
+    with open(json_path,"w",encoding="utf-8") as fh:
+        json.dump({"audio_file":audio_file,"language":result.get("language","unknown"),"segments":result.get("segments",[])}, fh, ensure_ascii=False, indent=2)
 
-    # TXT
-    with open(txt_path, "w", encoding="utf-8") as fh:
-        fh.write(f"Audio: {audio_file}\nLanguage: {result.get('language', 'unknown')}\n")
-        fh.write("=" * 60 + "\n\n")
-        for seg in result.get("segments", []):
-            speaker = seg.get("speaker", "UNKNOWN")
-            fh.write(f"[{format_timestamp(seg.get('start', 0.0))} → {format_timestamp(seg.get('end', 0.0))}] Speaker {speaker}:\n")
-            fh.write(seg.get("text", "").strip() + "\n\n")
+    with open(txt_path,"w",encoding="utf-8") as fh:
+        fh.write(f"Audio: {audio_file}\nLanguage: {result.get('language','unknown')}\n")
+        fh.write("="*60+"\n\n")
+        for seg in result.get("segments",[]):
+            speaker=seg.get("speaker","UNKNOWN")
+            fh.write(f"[{format_timestamp(seg.get('start',0.0))} → {format_timestamp(seg.get('end',0.0))}] Speaker {speaker}:\n")
+            fh.write(seg.get("text","").strip()+"\n\n")
 
-    # SRT
-    with open(srt_path, "w", encoding="utf-8") as fh:
-        for idx, seg in enumerate(result.get("segments", []), start=1):
+    with open(srt_path,"w",encoding="utf-8") as fh:
+        for idx,seg in enumerate(result.get("segments",[]),start=1):
             fh.write(f"{idx}\n")
-            fh.write(f"{format_timestamp(seg.get('start', 0.0))} --> {format_timestamp(seg.get('end', 0.0))}\n")
-            fh.write(f"[{seg.get('speaker', 'UNKNOWN')}] {seg.get('text', '').strip()}\n\n")
+            fh.write(f"{format_timestamp(seg.get('start',0.0))} --> {format_timestamp(seg.get('end',0.0))}\n")
+            fh.write(f"[{seg.get('speaker','UNKNOWN')}] {seg.get('text','').strip()}\n\n")
 
     print(f"Outputs written: {json_path}, {txt_path}, {srt_path}")
-    return json_path, txt_path, srt_path
-
+    return json_path,txt_path,srt_path
 
 # -------------------------
 # Main orchestration
 # -------------------------
 def main():
-    print("=" * 70)
+    print("="*70)
     print("Faster-Whisper + (optional) Pyannote Diarization runner")
-    print("=" * 70)
+    print("="*70)
 
-    # Step 0: preflight ensure minimal deps
     flags = ensure_dependencies()
-
-    # Setup HF login optionally (non-fatal)
-    hf = get_hf_token()
+    hf=get_hf_token()
     setup_hf_cli_login(hf)
-
-    # Locate audio files
-    audio_files = find_audio_files()
+    audio_files=find_audio_files()
     if not audio_files:
-        print("No audio files found in working directory. Supported extensions:", ", ".join(AUDIO_EXTENSIONS))
+        print("No audio files found. Supported extensions:",", ".join(AUDIO_EXTENSIONS))
         sys.exit(0)
 
-    print(f"Found {len(audio_files)} audio file(s):")
-    for f in audio_files:
-        print(" -", f)
-
-    processed = 0
+    processed=0
     for audio_path in audio_files:
-        print("\n" + "=" * 40)
-        print("Processing:", audio_path)
+        print("\n"+"="*40)
+        print("Processing:",audio_path)
         try:
-            # Transcribe
-            result, _ = transcribe_with_faster_whisper(audio_path, device="cpu")
-            # Try diarization mapping if pyannote available
-            segments_with_speakers, diar_ok = run_diarization_map(result.get("segments", []), audio_path, hf)
-            result["segments"] = segments_with_speakers
-            result["diarization_ok"] = bool(diar_ok)
-            # Save outputs
-            save_outputs(result, audio_path)
-            processed += 1
+            result,_=transcribe_with_faster_whisper(audio_path,device="cpu")
+            segments_with_speakers, diar_ok=run_diarization_map(result.get("segments",[]), audio_path, hf)
+            result["segments"]=segments_with_speakers
+            result["diarization_ok"]=bool(diar_ok)
+            save_outputs(result,audio_path)
+            processed+=1
         except Exception as e:
-            print("❌ Error processing", audio_path, ":", e)
+            print("❌ Error processing",audio_path,":",e)
             traceback.print_exc()
             continue
 
-    print("\n" + "=" * 70)
+    print("\n"+"="*70)
     print(f"Processing complete. Successfully processed {processed}/{len(audio_files)} audio files.")
-    print("=" * 70)
+    print("="*70)
 
-
-if __name__ == "__main__":
+if __name__=="__main__":
     main()

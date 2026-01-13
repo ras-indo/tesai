@@ -268,11 +268,12 @@ def run_diarization_map(transcript_segments: List[Dict], audio_path: str, hf_tok
     If pyannote.audio is available and HF token is provided, run diarization pipeline and map
     speaker labels to transcript segments. Returns (segments_with_speakers, diarization_success_flag).
     
-    COMPATIBLE with pyannote.audio 4.x API.
+    FIXED: Compatible with pyannote.audio 4.0.3 DiarizeOutput object
     """
     try:
         from pyannote.audio import Pipeline  # type: ignore
         import pyannote.audio
+        from pyannote.core import Segment  # type: ignore
         print(f"ℹ️ pyannote.audio version: {pyannote.audio.__version__}")
     except Exception as e:
         print(f"⚠️ pyannote.audio not available/importable: {e}")
@@ -286,17 +287,15 @@ def run_diarization_map(transcript_segments: List[Dict], audio_path: str, hf_tok
             s["speaker"] = "SPEAKER_00"
         return transcript_segments, False
 
-    # FIX: Use correct parameter name 'token' (not 'use_auth_token') for pyannote.audio 4.x
     try:
         # For pyannote.audio >= 4.0, use 'token' parameter
         pipeline = Pipeline.from_pretrained(
-            "pyannote/speaker-diarization-3.1",  # Model name for 4.x
+            "pyannote/speaker-diarization-3.1",
             token=hf_token
         )
         print("✅ Diarization pipeline loaded successfully.")
     except Exception as e:
         print(f"⚠️ Failed to load pyannote pipeline: {e}")
-        # Fallback: try older model name
         try:
             pipeline = Pipeline.from_pretrained("pyannote/speaker-diarization", token=hf_token)
             print("✅ Loaded fallback pipeline.")
@@ -308,26 +307,79 @@ def run_diarization_map(transcript_segments: List[Dict], audio_path: str, hf_tok
 
     # Run diarization
     try:
-        diarization = pipeline(audio_path)
+        diarization_result = pipeline(audio_path)
+        print(f"ℹ️ Diarization result type: {type(diarization_result)}")
     except Exception as e:
         print(f"⚠️ Diarization pipeline run failed: {e}")
         for s in transcript_segments:
             s["speaker"] = "SPEAKER_00"
         return transcript_segments, False
 
-    # Extract speaker turns using correct API for pyannote.audio 4.x
+    # EXTRACT SPEAKER TURNS - COMPATIBLE WITH DiarizeOutput (pyannote.audio 4.x)
     turns = []
+    
     try:
-        # In pyannote.audio 4.x, diarization is a pyannote.core.Annotation object
-        # The correct way to iterate is as (segment, track, label)
-        for turn, _, label in diarization.itertracks(yield_label=True):
-            turns.append((turn.start, turn.end, label))
-        print(f"ℹ️ Extracted {len(turns)} speaker turns using itertracks().")
+        # METHOD 1: Check if result has 'annotation' attribute (pyannote.audio >= 4.0)
+        if hasattr(diarization_result, 'annotation'):
+            print("ℹ️ Using 'annotation' attribute from DiarizeOutput")
+            annotation = diarization_result.annotation
+            for segment, track, label in annotation.itertracks(yield_label=True):
+                turns.append((segment.start, segment.end, label))
+                
+        # METHOD 2: Try direct iteration (if DiarizeOutput is iterable)
+        elif hasattr(diarization_result, '__iter__'):
+            print("ℹ️ Direct iteration of DiarizeOutput")
+            for segment, track, label in diarization_result.itertracks(yield_label=True):
+                turns.append((segment.start, segment.end, label))
+                
+        # METHOD 3: Try to get turns via get_timeline() method
+        elif hasattr(diarization_result, 'get_timeline'):
+            print("ℹ️ Using get_timeline() method")
+            for segment in diarization_result.get_timeline():
+                label = diarization_result[segment]
+                if hasattr(label, '__iter__'):
+                    for track, lbl in label:
+                        turns.append((segment.start, segment.end, str(lbl)))
+                else:
+                    turns.append((segment.start, segment.end, str(label)))
+                    
+        # METHOD 4: Try to access the raw result as a dict-like object
+        elif hasattr(diarization_result, '__getitem__'):
+            print("ℹ️ Accessing as dict-like object")
+            try:
+                # This might be a pyannote.core.Annotation
+                for segment, track, label in diarization_result.itertracks(yield_label=True):
+                    turns.append((segment.start, segment.end, label))
+            except:
+                # Fallback to extracting segments and labels
+                for segment in diarization_result.labels():
+                    for track in diarization_result.get_labels(segment):
+                        label = diarization_result[segment, track]
+                        turns.append((segment.start, segment.end, str(label)))
+                        
+        else:
+            # If none of the above work, try to print the object structure for debugging
+            print(f"⚠️ Unknown diarization result structure. Type: {type(diarization_result)}")
+            print(f"ℹ️ Available attributes: {dir(diarization_result)}")
+            raise AttributeError("Could not extract speaker turns from diarization result")
+            
     except Exception as e:
         print(f"⚠️ Could not extract diarization turns: {e}")
-        for s in transcript_segments:
-            s["speaker"] = "SPEAKER_00"
-        return transcript_segments, False
+        # Try one more fallback: check if it's already a list of turns
+        try:
+            if isinstance(diarization_result, (list, tuple)):
+                print("ℹ️ Result is list/tuple, trying to parse directly")
+                for item in diarization_result:
+                    if isinstance(item, (list, tuple)) and len(item) >= 3:
+                        turns.append((float(item[0]), float(item[1]), str(item[2])))
+        except:
+            pass
+            
+        if not turns:
+            print("❌ All extraction methods failed. Falling back to single speaker.")
+            for s in transcript_segments:
+                s["speaker"] = "SPEAKER_00"
+            return transcript_segments, False
 
     if not turns:
         print("⚠️ Diarization returned no turns. Falling back to single speaker.")
@@ -335,6 +387,8 @@ def run_diarization_map(transcript_segments: List[Dict], audio_path: str, hf_tok
             s["speaker"] = "SPEAKER_00"
         return transcript_segments, False
 
+    print(f"ℹ️ Successfully extracted {len(turns)} speaker turns")
+    
     # Map speaker labels to transcript segments by overlap
     def overlap(a_start, a_end, b_start, b_end) -> float:
         return max(0.0, min(a_end, b_end) - max(a_start, b_start))

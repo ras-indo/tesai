@@ -46,7 +46,6 @@ jobs:
           python -c "import nltk; nltk.download('punkt', quiet=True)"
 
       - name: Setup HF_TOKEN
-        if: secrets.HF_TOKEN != ''
         run: |
           echo "HF_TOKEN=${{ secrets.HF_TOKEN }}" >> $GITHUB_ENV
 

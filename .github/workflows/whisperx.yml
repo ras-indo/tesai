@@ -23,7 +23,7 @@ jobs:
       - name: Upgrade pip, setuptools, wheel
         run: python -m pip install --upgrade pip setuptools wheel
 
-      - name: Install core dependencies (quote version specs to avoid shell redirection issues)
+      - name: Install core dependencies (quote specs to avoid shell redirection)
         run: |
           pip install "regex" "packaging" "coloredlogs" "flatbuffers" "protobuf"
           pip install "numpy<2"
@@ -32,9 +32,11 @@ jobs:
         run: |
           pip install "torch==2.8.0+cpu" "torchaudio==2.8.0+cpu" --index-url https://download.pytorch.org/whl/cpu
 
-      - name: Install pyannote.audio (4.x) and minimal deps
+      - name: Install pyannote.audio (use available 4.x) and minimal deps
         run: |
-          pip install "pyannote.core==5.0.0" "pyannote.audio==4.1.1" "asteroid-filterbanks>=0.4" "einops>=0.6.0"
+          pip install "pyannote.core==5.0.0"
+          pip install "pyannote.audio==4.0.3"
+          pip install "asteroid-filterbanks>=0.4" "einops>=0.6.0"
 
       - name: Install faster-whisper and ONNX runtime (transcription)
         run: |
@@ -80,7 +82,7 @@ jobs:
           fi
           python run_diarization.py
 
-      - name: Upload outputs as artifact (optional)
+      - name: Upload outputs as artifact
         if: always()
         uses: actions/upload-artifact@v4
         with:
